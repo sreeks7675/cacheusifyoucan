@@ -9,7 +9,7 @@ BOTH a 0_real and a 1_fake subfolder (e.g. from mfv, or an ffpp method
 folder) once you've untarred it.
 
 IMPORTANT: this harness now explicitly requires images from BOTH classes.
-It will not silently run on "whatever it finds" — if either 0_real or
+It will not silently run on "whatever it finds" - if either 0_real or
 1_fake is missing/empty, it stops and tells you, unless you pass
 --allow-single-class to override for a quick one-off check.
 
@@ -24,6 +24,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import asdict
 
 from semantic_agent import SemanticContextAgent
 
@@ -70,7 +71,7 @@ def build_sample(real_images, fake_images, other_images, limit, allow_single_cla
             print(f"No images found at all.")
             sys.exit(1)
         print(
-            "WARNING: no '0_real' or '1_fake' subfolders detected — "
+            "WARNING: no '0_real' or '1_fake' subfolders detected - "
             "found images but couldn't tell which class they belong to. "
             "Falling back to untagged 'unknown' labels.\n"
         )
@@ -80,7 +81,7 @@ def build_sample(real_images, fake_images, other_images, limit, allow_single_cla
     if not real_images or not fake_images:
         missing = "0_real" if not real_images else "1_fake"
         msg = (
-            f"Only found images for one class — the '{missing}' folder is "
+            f"Only found images for one class - the '{missing}' folder is "
             f"missing or empty under this path. This harness is meant to "
             f"test BOTH real and fake images together.\n"
             f"  real found: {len(real_images)}\n"
@@ -133,8 +134,8 @@ def main():
     parser.add_argument(
         "--skip-explain",
         action="store_true",
-        help="Skip the Ollama call and just print raw findings "
-             "(use this if the backbone isn't served yet)"
+        help="Skip the Ollama call (explain + critic review) and just "
+             "print raw findings (use this if the backbone isn't served yet)"
     )
     parser.add_argument(
         "--allow-single-class",
@@ -172,27 +173,13 @@ def main():
         t0 = time.time()
 
         try:
-            findings = agent.run_checks(path)
-            record = {
-                "image": path,
-                "true_label": label,
-                "findings": findings.__dict__,
-            }
-
-            if args.skip_explain:
-                print(json.dumps(record, indent=2))
-            else:
-                try:
-                    explanation = agent.explain(findings)
-                    record["explanation"] = explanation
-                    print(json.dumps(record, indent=2))
-                except Exception as e:
-                    print(
-                        f"  [findings ok, explain() failed - "
-                        f"is Ollama running? {e}]"
-                    )
-                    print(json.dumps(record, indent=2))
-
+            # investigate() runs checks + (optionally) explain + critic,
+            # and returns the exact Report-Agent-shaped dict (verdict,
+            # confidence, semantic_conflicts[], clip_consistency_score,
+            # annotated_overlay_image, uncertainty, human_review_required,
+            # limitations, debug, [explanation, critic_review]).
+            record = agent.investigate(path, true_label=label, skip_explain=args.skip_explain)
+            print(json.dumps(record, indent=2))
             results.append(record)
 
         except Exception as e:
@@ -212,7 +199,11 @@ def main():
         subset = [r for r in results if r.get("true_label") == label]
         if subset:
             failed = sum(1 for r in subset if "error" in r)
-            print(f"  {label}: {len(subset)} tested, {failed} failed")
+            human_review = sum(
+                1 for r in subset
+                if "error" not in r and r.get("findings", {}).get("human_review_required")
+            )
+            print(f"  {label}: {len(subset)} tested, {failed} failed, {human_review} flagged for human review")
 
     print(f"\nWrote {len(results)} result(s) to {out_path}")
 
