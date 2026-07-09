@@ -1,0 +1,31 @@
+# Adapter A — orchestration & tool-calling (Planner + Retrieval agents)
+#
+# IMPORTANT: base_model changed from a text-only SLM to a small vision-language
+# model, because the Planner now reasons over the image directly rather than a
+# pre-summarized text string. The Retrieval Agent still runs text-only calls
+# against the same backbone — VLMs' underlying LLM works fine with no image
+# passed, so one shared backbone still works for both agents.
+base_model: Qwen/Qwen2-VL-7B-Instruct   # alt: microsoft/Phi-3.5-vision-instruct (smaller, ~4.2B)
+device: cuda
+load_in_4bit: true
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  # Target only the LLM component's projections, not the vision tower —
+  # keeps the adapter small and training fast; the vision encoder stays frozen.
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+training:
+  epochs: 3
+  batch_size: 2   # smaller than the old text-only default — image batches use more VRAM
+  learning_rate: 2.0e-4
+  output_dir: checkpoints/adapter_a
+  dataset_path: training/data/adapter_a_planner_dataset.jsonl   # image-grounded, see prepare_planner_dataset.py
+  retrieval_dataset_path: training/data/adapter_a_retrieval_dataset.jsonl   # text-only, unchanged
+
+vector_store:
+  backend: faiss   # swap to qdrant if the team stands up a server
+  index_path: data/retrieval_index.faiss
+  embedding_model: sentence-transformers/all-MiniLM-L6-v2

@@ -1,0 +1,30 @@
+# --- Always needed (agents, schemas, tests) ---
+pydantic>=2.6
+pytest>=8.0
+pip install \
+torch \
+torchvision \
+transformers>=4.49 \
+trl>=0.23 \
+datasets \
+accelerate \
+peft \
+flash-attn \
+bitsandbytes \
+pillow \
+opencv-python \
+scikit-learn \
+tqdm \
+pandas
+
+# --- Needed only on the GPU box for real inference/training ---
+# torch>=2.2
+# transformers>=4.44
+# peft>=0.12
+# trl>=0.9
+# bitsandbytes>=0.43
+# datasets>=2.20
+
+# --- Needed only wherever the vector store actually runs ---
+# faiss-cpu>=1.8       # or faiss-gpu if the retrieval box has a GPU to spare
+# sentence-transformers>=3.0
