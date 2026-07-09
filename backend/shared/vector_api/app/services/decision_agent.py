@@ -5,7 +5,7 @@ pipeline context, returning a final decision summary that includes
 confidence, risk, uncertainty, and explainable reasoning.
 """
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 
 class DecisionAgent:
@@ -24,6 +24,10 @@ class DecisionAgent:
         fusion = context.get("fusion", {})
 
         fused_score = self._safe_score(fusion.get("fused_fake_score", 0.5))
+        fusion_confidence = self._safe_optional_score(fusion.get("fusion_confidence"))
+        fusion_uncertainty = self._safe_optional_score(fusion.get("fusion_uncertainty"))
+        fusion_risk_level = self._normalize_risk_level(fusion.get("fusion_risk_level"))
+        has_fusion_dissent = bool(fusion.get("has_dissent", False))
         artifact_score = self._safe_score(forensic.get("artifact_score", 0.5))
         scene_consistency = self._safe_score(
             semantic.get("scene_consistency_score", 0.5)
@@ -31,7 +35,16 @@ class DecisionAgent:
         semantic_fake_score = 1.0 - scene_consistency
         retrieval_score = self._compute_retrieval_score(retrieval)
 
-        confidence_score = self._compute_confidence_score(fused_score)
+        threshold_used = self._resolve_threshold(
+            fusion_uncertainty=fusion_uncertainty,
+            has_fusion_dissent=has_fusion_dissent,
+            fusion_risk_level=fusion_risk_level,
+        )
+
+        confidence_score = self._compute_confidence_score(
+            fused_score=fused_score,
+            fusion_confidence=fusion_confidence,
+        )
         threat_score = self._compute_threat_score(
             artifact_score=artifact_score,
             semantic_score=semantic_fake_score,
@@ -39,6 +52,7 @@ class DecisionAgent:
             fused_score=fused_score,
         )
         risk_level = self._compute_risk_level(threat_score)
+        risk_level = self._merge_risk_levels(risk_level, fusion_risk_level)
         confidence_low, confidence_high = self._compute_confidence_interval(
             confidence_score
         )
@@ -48,8 +62,9 @@ class DecisionAgent:
             semantic_fake_score=semantic_fake_score,
             retrieval_score=retrieval_score,
             confidence_score=confidence_score,
+            fusion_uncertainty=fusion_uncertainty,
         )
-        verdict = self._determine_verdict(fused_score)
+        verdict = self._determine_verdict(fused_score, threshold_used)
         conflicting = self._has_conflicting_evidence(
             artifact_score=artifact_score,
             semantic_fake_score=semantic_fake_score,
@@ -60,11 +75,17 @@ class DecisionAgent:
             confidence_score=confidence_score,
             verdict=verdict,
             conflicting_evidence=conflicting,
+            fusion_uncertainty=fusion_uncertainty,
+            has_fusion_dissent=has_fusion_dissent,
+            threshold_used=threshold_used,
         )
         review_reason = self._build_review_reason(
             confidence_score=confidence_score,
             verdict=verdict,
             conflicting=conflicting,
+            fusion_uncertainty=fusion_uncertainty,
+            has_fusion_dissent=has_fusion_dissent,
+            threshold_used=threshold_used,
         )
         decision_justification = self._build_justification(
             planner=planner,
@@ -86,7 +107,7 @@ class DecisionAgent:
                 "high": round(confidence_high, 3),
             },
             "calibration_ece": self.CALIBRATION_ECE,
-            "threshold_used": self.DEFAULT_THRESHOLD,
+            "threshold_used": round(threshold_used, 3),
             "risk_level": risk_level,
             "threat_score": round(threat_score, 3),
             "decision_justification": decision_justification,
@@ -108,13 +129,59 @@ class DecisionAgent:
             return 0.0
         return min(max(score, 0.0), 1.0)
 
-    def _compute_confidence_score(self, fused_score: float) -> float:
+    def _safe_optional_score(self, value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        return self._safe_score(value)
+
+    def _normalize_risk_level(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        if normalized in {"high", "medium", "low"}:
+            return normalized.capitalize()
+        return None
+
+    def _resolve_threshold(
+        self,
+        fusion_uncertainty: Optional[float],
+        has_fusion_dissent: bool,
+        fusion_risk_level: Optional[str],
+    ) -> float:
+        threshold = self.DEFAULT_THRESHOLD
+
+        if fusion_uncertainty is not None:
+            if fusion_uncertainty >= 0.65:
+                threshold += 0.10
+            elif fusion_uncertainty >= 0.45:
+                threshold += 0.05
+
+        if has_fusion_dissent:
+            threshold += 0.05
+
+        if fusion_risk_level == "High":
+            threshold += 0.02
+
+        return min(max(threshold, 0.50), 0.90)
+
+    def _compute_confidence_score(
+        self,
+        fused_score: float,
+        fusion_confidence: Optional[float],
+    ) -> float:
         """Compute a confidence score using fused evidence."""
         if fused_score >= self.DEFAULT_THRESHOLD:
-            return fused_score
-        if fused_score <= 1.0 - self.DEFAULT_THRESHOLD:
-            return 1.0 - fused_score
-        return 1.0 - abs(fused_score - 0.5) * 2.0
+            score = fused_score
+        elif fused_score <= 1.0 - self.DEFAULT_THRESHOLD:
+            score = 1.0 - fused_score
+        else:
+            score = 1.0 - abs(fused_score - 0.5) * 2.0
+
+        if fusion_confidence is not None:
+            # Blend EFDA's confidence with calibrated score for stability.
+            score = score * 0.7 + fusion_confidence * 0.3
+
+        return min(max(score, 0.0), 1.0)
 
     def _compute_retrieval_score(self, retrieval: Dict[str, Any]) -> float:
         """Derive a deterministic retrieval threat signal."""
@@ -162,6 +229,7 @@ class DecisionAgent:
         semantic_fake_score: float,
         retrieval_score: float,
         confidence_score: float,
+        fusion_uncertainty: Optional[float],
     ) -> Tuple[float, float]:
         """Estimate epistemic and aleatoric uncertainty deterministically."""
         epistemic = min(
@@ -170,16 +238,24 @@ class DecisionAgent:
             + abs(fused_score - retrieval_score) * 0.3
             + (1.0 - confidence_score) * 0.3,
         )
+        if fusion_uncertainty is not None:
+            epistemic = max(epistemic, fusion_uncertainty)
         aleatoric = min(1.0, 0.05 + (0.5 - abs(fused_score - 0.5)) * 0.1)
         return epistemic, aleatoric
 
-    def _determine_verdict(self, fused_score: float) -> str:
+    def _determine_verdict(self, fused_score: float, threshold_used: float) -> str:
         """Return the final `real`, `fake`, or `uncertain` verdict."""
-        if fused_score >= self.DEFAULT_THRESHOLD:
+        if fused_score >= threshold_used:
             return "fake"
-        if fused_score <= 1.0 - self.DEFAULT_THRESHOLD:
+        if fused_score <= 1.0 - threshold_used:
             return "real"
         return "uncertain"
+
+    def _merge_risk_levels(self, computed: str, fusion_level: Optional[str]) -> str:
+        if not fusion_level:
+            return computed
+        rank = {"Low": 1, "Medium": 2, "High": 3}
+        return fusion_level if rank[fusion_level] > rank[computed] else computed
 
     def _has_conflicting_evidence(
         self,
@@ -200,12 +276,17 @@ class DecisionAgent:
         confidence_score: float,
         verdict: str,
         conflicting_evidence: bool,
+        fusion_uncertainty: Optional[float],
+        has_fusion_dissent: bool,
+        threshold_used: float,
     ) -> bool:
         """Decide whether a human reviewer should inspect this case."""
         return (
-            confidence_score < self.DEFAULT_THRESHOLD
+            confidence_score < threshold_used
             or verdict == "uncertain"
             or conflicting_evidence
+            or (fusion_uncertainty is not None and fusion_uncertainty >= 0.45)
+            or has_fusion_dissent
         )
 
     def _build_review_reason(
@@ -213,15 +294,22 @@ class DecisionAgent:
         confidence_score: float,
         verdict: str,
         conflicting: bool,
+        fusion_uncertainty: Optional[float],
+        has_fusion_dissent: bool,
+        threshold_used: float,
     ) -> str:
         """Generate a concise review reason for human oversight."""
         reasons = []
-        if confidence_score < self.DEFAULT_THRESHOLD:
+        if confidence_score < threshold_used:
             reasons.append("confidence below threshold")
         if verdict == "uncertain":
             reasons.append("verdict remains uncertain")
         if conflicting:
             reasons.append("conflicting evidence exists")
+        if fusion_uncertainty is not None and fusion_uncertainty >= 0.45:
+            reasons.append("fusion uncertainty is elevated")
+        if has_fusion_dissent:
+            reasons.append("fusion dissent requires manual arbitration")
 
         if not reasons:
             return "Confidence meets threshold and evidence is consistent."

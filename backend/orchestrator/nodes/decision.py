@@ -29,7 +29,13 @@ def decision_node(state: PipelineState) -> dict:
             "similar_images_found": len(state.consolidated_evidence.get("matches", []))
         },
         "fusion": {
-            "fused_fake_score": state.consolidated_evidence.get("fused_fake_score", 0.5)
+            "fused_fake_score": state.consolidated_evidence.get("fused_fake_score", 0.5),
+            "fusion_confidence": state.consolidated_evidence.get("fusion_confidence"),
+            "fusion_uncertainty": state.consolidated_evidence.get("fusion_uncertainty"),
+            "fusion_risk_level": state.consolidated_evidence.get("fusion_risk_level"),
+            "has_dissent": bool(
+                state.consolidated_evidence.get("efda", {}).get("dissent")
+            ),
         }
     }
 
