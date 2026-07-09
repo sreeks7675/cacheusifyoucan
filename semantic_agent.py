@@ -8,26 +8,31 @@ Role (per design_document.md / EADIS slide):
   - Context vs. real-world plausibility
   - Lighting & shadow consistency
 
-Pattern: cheap deterministic/vision checks -> structured JSON findings ->
-hand to shared SLM backbone (Adapter B role) with a tight system prompt to
-turn scores into a human-readable finding. No LoRA yet -> prompt-based
-fallback, per the design doc's timeline-risk mitigation.
+Output contract (per "Table 1 - What the Report Agent needs FROM each agent",
+Semantic row):
+    verdict, confidence, semantic_conflicts[] {type, description, region_bbox,
+    severity}, clip_consistency_score, annotated overlay image (optional)
 
-Brownie-point coverage added in this version (all scoped to what a cheap,
-deterministic, no-training agent can reasonably do):
-  - Confidence & Uncertainty Estimation: overall_confidence + uncertainty_flag
-  - Failure Analysis & Self-Reflection: recommend_human_review + limitations
-  - Evidence-Based Visual Reasoning: annotated evidence image (lighting
-    quadrant highlight + OCR text boxes) saved to disk
-  - Critic / Reviewer Models: a second, cheap SLM pass that checks the
-    explanation against the findings for unsupported claims
-  - Robustness to Unseen Manipulations: re-run checks on a JPEG-recompressed
-    in-memory copy of the image and flag if results are unstable
+conflict "type" is constrained to the fixed enum handed down by the team:
+    lighting | reflection | object_relation | scene_coherence | lip_sync
 
-NOTE: This agent is dataset-agnostic — it does not assume the image it's
-given is real or fake. It just runs checks and reports findings. Ground
-truth (real/fake) is only used by the *test harness* for evaluation, and
-is passed through here purely as an optional label for bookkeeping.
+IMPORTANT / HONEST LIMITATION: that enum has no dedicated "text/OCR" bucket.
+OCR-implausibility findings are therefore filed under "scene_coherence" -
+see `limitations` in the output for this and other known gaps (reflection,
+object_relation, lip_sync are not implemented in this version - stubbed for
+future work per the design doc's timeline-risk mitigation).
+
+This agent is dataset-agnostic - it does not assume the image it's given is
+real or fake. It just runs checks and reports findings. `true_label` is only
+ever used by the *test harness* for bookkeeping/eval, never by the checks
+themselves.
+
+Live event stream (per "Table 3 - What the UI needs LIVE from every agent"):
+    {"agent": "semantic", "status": "running|completed", "type":
+    "thinking|tool|evidence|output", "text": ..., "tool_name": ...,
+    "execution_ms": ..., "confidence": ..., "ts": ...}
+Semantic-specific UI behavior: conflicts stream in one at a time and the UI
+adds a hotspot marker per conflict as it arrives - see `investigate_stream()`.
 
 Swap the CONFIG block below once the planner's real dispatch contract and
 the Ollama/vLLM endpoint are confirmed with the team.
@@ -35,14 +40,18 @@ the Ollama/vLLM endpoint are confirmed with the team.
 
 import json
 import os
+import time
 from dataclasses import dataclass, asdict, field
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 import cv2
 import numpy as np
 import pytesseract
+from pytesseract import Output
 from PIL import Image
 
+# CLIP - use open_clip or transformers CLIP, whichever the team standardized on.
+# Using transformers here since it's the lower-friction default.
 import torch
 from transformers import CLIPModel, CLIPProcessor
 
@@ -52,51 +61,69 @@ import requests
 # ---------------------------------------------------------------------------
 # CONFIG - adjust to match actual infra (Muthu's SLM backbone serving setup)
 # ---------------------------------------------------------------------------
+# Per the team's deployment diagram ("TruthLens AI"), the Semantic Agent's
+# reasoning backbone is Qwen 7B-VL - a VISION-language model, not a text-only
+# one. That means it can look at the image directly, not just read our
+# findings as text. explain() below sends both the image and the structured
+# findings, so the model can visually corroborate (or push back on) what the
+# deterministic checks found, rather than blindly narrating numbers.
+#
+# Swap OLLAMA_MODEL to whatever tag your team actually pulled/served, e.g.
+# "qwen2-vl:7b" or "qwen2.5-vl:7b" - check `ollama list` on the serving box.
+# If the backbone is served via vLLM instead of Ollama, swap ENDPOINT/payload
+# shape accordingly once that's confirmed with the team.
 CLIP_MODEL_NAME = "openai/clip-vit-base-patch32"
 OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "phi4-mini"  # or llama3.1:8b / qwen2.5:7b - whatever backbone is served
-
-EVIDENCE_OUTPUT_DIR = "evidence_output"
+OLLAMA_MODEL = "qwen2.5vl:7b" # Qwen 7B-VL per the deployment diagram - confirm exact tag with team
+AGENT_SUPPORTS_VISION = True  # set False to fall back to text-only findings if VL isn't served yet
 
 # Candidate scene/object labels for zero-shot plausibility check.
+# Extend this with domain-relevant labels for your test set (indoor/outdoor,
+# lighting conditions, object categories likely to clash in a manipulated image).
 SCENE_LABELS = [
     "an indoor scene", "an outdoor scene", "a studio portrait",
     "a natural daylight photo", "an artificially lit photo",
     "a photo with inconsistent shadows", "a photo with consistent lighting",
 ]
 
-# Thresholds - tune against labeled real/fake examples.
-CLIP_LOW_CONFIDENCE_THRESHOLD = 0.40
-LIGHTING_VARIANCE_THRESHOLD = 400.0
-ROBUSTNESS_JPEG_QUALITY = 50
-ROBUSTNESS_VARIANCE_DELTA_THRESHOLD = 150.0
+# Fixed conflict-type enum handed down by the team (Table 1 contract).
+# Do not add new types here without confirming with whoever owns the
+# Report Agent's schema.
+CONFLICT_TYPES = {"lighting", "reflection", "object_relation", "scene_coherence", "lip_sync"}
+
+# Tunable thresholds - arbitrary starting points, tune against labeled
+# real/fake examples once you have enough of both classes.
+CLIP_AMBIGUOUS_THRESHOLD = 0.35     # below this, scene classification is unreliable
+LIGHTING_CV_THRESHOLD = 20.0        # coefficient-of-variation %, not raw variance -
+                                     # scale/exposure-invariant, fixes false positives
+                                     # on bright/dark real photos that raw variance had
+SEVERE_CONFLICT_THRESHOLD = 0.6     # conflict severity above which verdict -> inconsistent
+CONFIDENCE_LOW_THRESHOLD = 0.5      # below this, flag for human review
+
+
+# ---------------------------------------------------------------------------
+# Data contracts
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SemanticConflict:
+    type: str                 # one of CONFLICT_TYPES
+    description: str
+    region_bbox: List[int]    # [x, y, w, h] in pixel coordinates
+    severity: float           # 0-1
 
 
 @dataclass
 class SemanticFindings:
-    clip_top_label: str
-    clip_confidence: float
-    ocr_text_detected: str
-    ocr_suspicious: bool
-    lighting_variance_score: float
-    shadow_consistency_flag: bool
-
-    # --- Confidence & Uncertainty Estimation ---
-    overall_confidence: float = 0.0
-    uncertainty_flag: bool = False
-
-    # --- Failure Analysis & Self-Reflection ---
-    recommend_human_review: bool = False
-    limitations: Optional[str] = None
-
-    # --- Evidence-Based Visual Reasoning ---
-    evidence_image_path: Optional[str] = None
-
-    # --- Robustness to Unseen Manipulations ---
-    robustness_stable: Optional[bool] = None
-    robustness_notes: Optional[str] = None
-
-    raw_notes: Optional[str] = None
+    verdict: str                          # "consistent" | "inconsistent" | "uncertain"
+    confidence: float                     # 0-1, confidence in the verdict
+    semantic_conflicts: List[SemanticConflict]
+    clip_consistency_score: float         # = CLIP's top-label confidence
+    annotated_overlay_image: Optional[str]  # path, or None if no conflicts to draw
+    uncertainty: Dict[str, float]         # {"epistemic": ..., "aleatoric": ...}
+    human_review_required: bool
+    limitations: List[str]                # explicit gaps / low-confidence caveats
+    debug: Dict[str, Any] = field(default_factory=dict)  # raw signals, for engineers only
 
 
 class SemanticContextAgent:
@@ -104,9 +131,8 @@ class SemanticContextAgent:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.clip_model = CLIPModel.from_pretrained(CLIP_MODEL_NAME).to(self.device)
         self.clip_processor = CLIPProcessor.from_pretrained(CLIP_MODEL_NAME)
-        os.makedirs(EVIDENCE_OUTPUT_DIR, exist_ok=True)
 
-    # -- Step 1: cheap deterministic/vision checks --------------------------
+    # -- low-level checks ----------------------------------------------------
 
     def _clip_scene_check(self, image: Image.Image) -> tuple[str, float]:
         inputs = self.clip_processor(
@@ -118,165 +144,130 @@ class SemanticContextAgent:
         best_idx = int(probs.argmax())
         return SCENE_LABELS[best_idx], float(probs[best_idx])
 
-    def _ocr_check(self, cv_image: np.ndarray) -> tuple[str, bool]:
-        # pytesseract expects RGB (or grayscale); cv2 loads BGR by default.
-        rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+    def _ocr_check(self, rgb_image: np.ndarray) -> tuple[str, bool, Optional[List[int]]]:
         text = pytesseract.image_to_string(rgb_image).strip()
-        if text:
-            alnum_ratio = sum(c.isalnum() or c.isspace() for c in text) / max(len(text), 1)
-            suspicious = alnum_ratio < 0.6
-        else:
-            suspicious = False
-        return text, suspicious
+        if not text:
+            return text, False, None
 
-    def _lighting_shadow_check(self, cv_image: np.ndarray) -> tuple[float, bool, list[float]]:
-        gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+        # Placeholder heuristic: flag if OCR finds text but it's garbled
+        # (mostly non-alphanumeric) - a common artifact of text baked into
+        # generated images. Replace with a real dictionary/language check.
+        alnum_ratio = sum(c.isalnum() or c.isspace() for c in text) / max(len(text), 1)
+        suspicious = alnum_ratio < 0.6
+
+        bbox = None
+        if suspicious:
+            try:
+                data = pytesseract.image_to_data(rgb_image, output_type=Output.DICT)
+                xs, ys, xe, ye = [], [], [], []
+                for i, word in enumerate(data.get("text", [])):
+                    if word.strip():
+                        x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
+                        xs.append(x); ys.append(y); xe.append(x + w); ye.append(y + h)
+                if xs:
+                    bbox = [int(min(xs)), int(min(ys)), int(max(xe) - min(xs)), int(max(ye) - min(ys))]
+            except Exception:
+                bbox = None  # bbox is best-effort; missing bbox doesn't block the finding
+
+        return text, suspicious, bbox
+
+    def _lighting_shadow_check(self, gray: np.ndarray) -> tuple[float, float, bool, List[int]]:
         h, w = gray.shape
-        quads = [
-            gray[0:h // 2, 0:w // 2], gray[0:h // 2, w // 2:w],
-            gray[h // 2:h, 0:w // 2], gray[h // 2:h, w // 2:w],
+        quad_boxes = [
+            (0, 0, w // 2, h // 2), (w // 2, 0, w - w // 2, h // 2),
+            (0, h // 2, w // 2, h - h // 2), (w // 2, h // 2, w - w // 2, h - h // 2),
         ]
+        quads = [gray[y:y + bh, x:x + bw] for (x, y, bw, bh) in quad_boxes]
         means = [float(q.mean()) for q in quads]
-        variance_score = float(np.var(means))
-        shadow_flag = variance_score > LIGHTING_VARIANCE_THRESHOLD
-        return variance_score, shadow_flag, means
 
-    # -- Brownie point: Evidence-Based Visual Reasoning ----------------------
+        raw_variance = float(np.var(means))
+        mean_of_means = float(np.mean(means)) or 1.0  # avoid div-by-zero on solid-black images
+        # Coefficient of variation - scale/exposure invariant, unlike raw variance,
+        # which was flagging real bright/dark outdoor photos as "inconsistent"
+        # purely because they're high-exposure, not because of an actual lighting
+        # mismatch. This is still a coarse proxy, not a true illumination model.
+        coefficient_of_variation = float(np.std(means) / mean_of_means * 100)
 
-    def _generate_evidence_image(self, image_path: str, cv_image: np.ndarray,
-                                  quad_means: list[float]) -> Optional[str]:
+        shadow_flag = coefficient_of_variation > LIGHTING_CV_THRESHOLD
+        worst_quad_idx = int(np.argmax(np.abs(np.array(means) - mean_of_means)))
+        worst_bbox = list(quad_boxes[worst_quad_idx])
+
+        return raw_variance, coefficient_of_variation, shadow_flag, worst_bbox
+
+    def _estimate_aleatoric_uncertainty(self, gray: np.ndarray) -> float:
         """
-        Draw a highlight box around the quadrant with the most anomalous
-        brightness (proxy for "where the lighting inconsistency evidence
-        is"), plus boxes around any OCR-detected text regions. Saves an
-        annotated copy so the report/UI has something visual to show,
-        per the "Visual Evidence (Highlighted Regions)" output requirement.
+        Crude blur/noise proxy: low Laplacian variance = low sharpness = the
+        image itself is a worse source of signal (compressed, blurry, noisy),
+        independent of what the model thinks. Higher aleatoric = trust the
+        pixels less, regardless of how confident CLIP is.
         """
-        try:
-            annotated = cv_image.copy()
-            h, w = cv_image.shape[:2]
-            quad_boxes = [
-                (0, 0, w // 2, h // 2),
-                (w // 2, 0, w, h // 2),
-                (0, h // 2, w // 2, h),
-                (w // 2, h // 2, w, h),
-            ]
-            avg = sum(quad_means) / len(quad_means)
-            most_anomalous_idx = int(np.argmax([abs(m - avg) for m in quad_means]))
-            x1, y1, x2, y2 = quad_boxes[most_anomalous_idx]
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 3)
-            cv2.putText(annotated, "lighting anomaly", (x1 + 10, y1 + 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        aleatoric = 1.0 - min(1.0, laplacian_var / 1000.0)
+        return round(max(0.0, aleatoric), 4)
 
-            # OCR text bounding boxes (green)
-            rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
-            data = pytesseract.image_to_data(rgb_image, output_type=pytesseract.Output.DICT)
-            for i, conf in enumerate(data.get("conf", [])):
-                try:
-                    conf_val = float(conf)
-                except (TypeError, ValueError):
-                    continue
-                if conf_val > 30 and data["text"][i].strip():
-                    tx, ty, tw, th = (data["left"][i], data["top"][i],
-                                       data["width"][i], data["height"][i])
-                    cv2.rectangle(annotated, (tx, ty), (tx + tw, ty + th), (0, 255, 0), 2)
+    # -- evidence-based visual reasoning (brownie point) ---------------------
 
-            base_name = os.path.splitext(os.path.basename(image_path))[0]
-            out_path = os.path.join(EVIDENCE_OUTPUT_DIR, f"{base_name}_evidence.jpg")
-            cv2.imwrite(out_path, annotated)
-            return out_path
-        except Exception:
-            # Evidence image is a bonus, not a hard dependency -- never let
-            # this break the core findings pipeline.
+    def _draw_annotated_overlay(
+        self, cv_image: np.ndarray, conflicts: List[SemanticConflict], image_path: str
+    ) -> Optional[str]:
+        if not conflicts:
             return None
+        overlay = cv_image.copy()
+        for c in conflicts:
+            x, y, w, h = c.region_bbox
+            color = (0, 0, 255) if c.severity >= 0.7 else (0, 165, 255) if c.severity >= 0.4 else (0, 200, 200)
+            cv2.rectangle(overlay, (x, y), (x + w, y + h), color, 2)
+            label_y = max(y - 8, 14)
+            cv2.putText(overlay, c.type, (x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-    # -- Brownie point: Robustness to Unseen Manipulations -------------------
+        base, _ = os.path.splitext(image_path)
+        out_path = f"{base}_semantic_annotated.png"
+        cv2.imwrite(out_path, overlay)
+        return out_path
 
-    def _robustness_check(self, cv_image: np.ndarray, clip_label: str,
-                           lighting_var: float) -> tuple[bool, str]:
+    # -- critic / reviewer step (brownie point) ------------------------------
+
+    def _critic_review(self, findings: SemanticFindings, explanation: str) -> Dict[str, Any]:
         """
-        Re-run the cheap checks on a JPEG-recompressed in-memory copy of the
-        image and compare results to the original. If the scene label
-        flips or the lighting variance swings a lot under a routine
-        compression pass, that's a signal this image's "evidence" isn't
-        robust -- worth surfacing rather than reporting blind confidence.
+        A second pass where the SLM checks its own (or a peer's) explanation
+        against the raw findings only - catches hallucinated detail or a
+        tone/severity mismatch before this goes into the final report.
         """
-        try:
-            success, encoded = cv2.imencode(
-                ".jpg", cv_image, [cv2.IMWRITE_JPEG_QUALITY, ROBUSTNESS_JPEG_QUALITY]
-            )
-            if not success:
-                return True, "Robustness check skipped (re-encode failed)."
-
-            recompressed = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-            pil_recompressed = Image.fromarray(cv2.cvtColor(recompressed, cv2.COLOR_BGR2RGB))
-
-            re_label, _ = self._clip_scene_check(pil_recompressed)
-            re_var, _, _ = self._lighting_shadow_check(recompressed)
-
-            label_stable = (re_label == clip_label)
-            var_delta = abs(re_var - lighting_var)
-            var_stable = var_delta <= ROBUSTNESS_VARIANCE_DELTA_THRESHOLD
-
-            stable = label_stable and var_stable
-            notes = (
-                f"scene label {'stable' if label_stable else f'changed to \"{re_label}\"'} "
-                f"under JPEG q={ROBUSTNESS_JPEG_QUALITY} recompression; "
-                f"lighting variance delta={round(var_delta, 2)} "
-                f"({'within' if var_stable else 'exceeds'} threshold "
-                f"{ROBUSTNESS_VARIANCE_DELTA_THRESHOLD})."
-            )
-            return stable, notes
-        except Exception as e:
-            return True, f"Robustness check skipped due to error: {e}"
-
-    # -- Brownie point: Confidence & Uncertainty / Self-Reflection -----------
-
-    def _assess_confidence_and_limitations(
-        self, clip_conf: float, ocr_suspicious: bool, shadow_flag: bool,
-        robustness_stable: Optional[bool]
-    ) -> tuple[float, bool, bool, str]:
-        """
-        Combine per-check signals into one overall confidence score and
-        decide whether this case should be flagged for human review, with
-        a plain-language note on why the agent is or isn't confident.
-        """
-        overall_confidence = clip_conf
-        reasons = []
-
-        uncertainty_flag = clip_conf < CLIP_LOW_CONFIDENCE_THRESHOLD
-        if uncertainty_flag:
-            reasons.append(
-                f"CLIP scene classification confidence is low ({clip_conf})."
-            )
-
-        conflicting_signals = ocr_suspicious and shadow_flag
-        if conflicting_signals:
-            reasons.append(
-                "Both OCR-suspicious text and lighting-inconsistency flags "
-                "fired together, which this agent cannot itself adjudicate."
-            )
-            overall_confidence *= 0.7
-
-        if robustness_stable is False:
-            reasons.append(
-                "Findings were not stable under a routine JPEG recompression "
-                "test, so this evidence may not generalize."
-            )
-            overall_confidence *= 0.7
-
-        recommend_human_review = uncertainty_flag or conflicting_signals or (robustness_stable is False)
-
-        limitations = (
-            "No limitations flagged; checks were consistent and confident."
-            if not reasons else
-            "Limitations: " + " ".join(reasons) +
-            " This agent only performs scene/OCR/lighting heuristics -- "
-            "it does not verify facial biometrics, frequency-domain "
-            "artifacts, or source attribution, which are other agents' jobs."
+        critic_system = (
+            "You are a critic agent reviewing a forensic explanation for a "
+            "deepfake investigation pipeline. You are given structured "
+            "findings and an explanation written from them. Check ONLY "
+            "whether the explanation is fully grounded in the findings "
+            "(no invented detail, no unsupported claims) and whether its "
+            "tone matches the severity of the findings. Respond with STRICT "
+            "JSON only, no prose outside the JSON: "
+            '{"agrees": true|false, "notes": "<1-2 sentence critique>"}'
         )
+        critic_user = (
+            f"Findings:\n{json.dumps(asdict(findings), indent=2)}\n\n"
+            f"Explanation to review:\n{explanation}"
+        )
+        response = requests.post(
+            OLLAMA_ENDPOINT,
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": f"{critic_system}\n\n{critic_user}",
+                "stream": False,
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        raw = response.json().get("response", "").strip()
+        try:
+            parsed = json.loads(raw)
+            return {"agrees": bool(parsed.get("agrees", True)), "notes": str(parsed.get("notes", ""))}
+        except Exception:
+            # Critic output wasn't valid JSON - fail open (agrees=True) rather
+            # than silently tanking confidence on a parsing fluke, but keep the
+            # raw text so a human can see what happened.
+            return {"agrees": True, "notes": f"Critic response was not valid JSON: {raw[:200]}"}
 
-        return round(float(overall_confidence), 4), uncertainty_flag, recommend_human_review, limitations
+    # -- Step 1: cheap deterministic/vision checks --------------------------
 
     def run_checks(self, image_path: str) -> SemanticFindings:
         if not os.path.isfile(image_path):
@@ -289,161 +280,252 @@ class SemanticContextAgent:
                 f"an unsupported format, or a truncated download. "
                 f"(.webp support depends on your OpenCV build.)"
             )
-
         try:
             pil_image = Image.open(image_path).convert("RGB")
         except Exception as e:
             raise ValueError(f"PIL could not open '{image_path}': {e}")
 
+        rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+        gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
+
         clip_label, clip_conf = self._clip_scene_check(pil_image)
-        ocr_text, ocr_suspicious = self._ocr_check(cv_image)
-        lighting_var, shadow_flag, quad_means = self._lighting_shadow_check(cv_image)
+        ocr_text, ocr_suspicious, ocr_bbox = self._ocr_check(rgb_image)
+        raw_variance, cv_score, shadow_flag, lighting_bbox = self._lighting_shadow_check(gray)
+        aleatoric = self._estimate_aleatoric_uncertainty(gray)
 
-        robustness_stable, robustness_notes = self._robustness_check(
-            cv_image, clip_label, lighting_var
+        conflicts: List[SemanticConflict] = []
+        limitations: List[str] = [
+            "Reflection/specular-consistency check not implemented in this "
+            "version - stubbed for future work.",
+            "Object-relation consistency check not implemented - would "
+            "require detection + relational reasoning (e.g. YOLO + rules).",
+            "Lip-sync check is not applicable to single static images; "
+            "only relevant for video input.",
+            "The shared conflict-type contract has no dedicated 'text/OCR' "
+            "category, so OCR-implausibility findings are filed under "
+            "'scene_coherence' below.",
+            "Lighting/shadow check is a coefficient-of-variation heuristic, "
+            "not a true illumination-consistency model - tune "
+            "LIGHTING_CV_THRESHOLD against labeled real/fake examples.",
+        ]
+
+        if shadow_flag:
+            severity = round(min(1.0, cv_score / 50.0), 4)
+            conflicts.append(SemanticConflict(
+                type="lighting",
+                description=(
+                    f"Quadrant brightness coefficient of variation ({cv_score:.1f}%) "
+                    f"exceeds the {LIGHTING_CV_THRESHOLD:.0f}% threshold, consistent "
+                    f"with a lighting/shadow-direction mismatch."
+                ),
+                region_bbox=lighting_bbox,
+                severity=severity,
+            ))
+
+        if ocr_suspicious:
+            severity = round(1.0 - (sum(c.isalnum() or c.isspace() for c in ocr_text) / max(len(ocr_text), 1)), 4)
+            conflicts.append(SemanticConflict(
+                type="scene_coherence",
+                description=(
+                    "OCR detected text in the image that is mostly non-alphanumeric "
+                    "or garbled, a pattern often seen in text baked into generated "
+                    "images by diffusion models."
+                ),
+                region_bbox=ocr_bbox if ocr_bbox else [0, 0, w, h],
+                severity=severity,
+            ))
+
+        if clip_conf < CLIP_AMBIGUOUS_THRESHOLD:
+            conflicts.append(SemanticConflict(
+                type="scene_coherence",
+                description=(
+                    f"CLIP zero-shot scene classification is low-confidence "
+                    f"(top label '{clip_label}' at {clip_conf:.2f}), meaning the "
+                    f"overall scene semantics are ambiguous or internally "
+                    f"inconsistent rather than clearly matching one plausible scene."
+                ),
+                region_bbox=[0, 0, w, h],
+                severity=round(1.0 - clip_conf, 4),
+            ))
+
+        # -- roll up verdict / confidence / uncertainty ----------------------
+        if not conflicts:
+            verdict = "consistent"
+            confidence = round(clip_conf, 4)
+        else:
+            max_severity = max(c.severity for c in conflicts)
+            verdict = "inconsistent" if max_severity >= SEVERE_CONFLICT_THRESHOLD else "uncertain"
+            confidence = round(max(0.05, min(0.99, (clip_conf + (1.0 - max_severity)) / 2)), 4)
+
+        epistemic = round(1.0 - clip_conf, 4)
+        human_review_required = (
+            verdict == "uncertain"
+            or confidence < CONFIDENCE_LOW_THRESHOLD
+            or any(c.severity >= SEVERE_CONFLICT_THRESHOLD for c in conflicts)
         )
 
-        overall_confidence, uncertainty_flag, recommend_human_review, limitations = (
-            self._assess_confidence_and_limitations(
-                clip_conf, ocr_suspicious, shadow_flag, robustness_stable
-            )
-        )
-
-        evidence_image_path = self._generate_evidence_image(image_path, cv_image, quad_means)
+        overlay_path = self._draw_annotated_overlay(cv_image, conflicts, image_path)
 
         return SemanticFindings(
-            clip_top_label=clip_label,
-            clip_confidence=round(clip_conf, 4),
-            ocr_text_detected=ocr_text,
-            ocr_suspicious=ocr_suspicious,
-            lighting_variance_score=round(lighting_var, 2),
-            shadow_consistency_flag=shadow_flag,
-            overall_confidence=overall_confidence,
-            uncertainty_flag=uncertainty_flag,
-            recommend_human_review=recommend_human_review,
+            verdict=verdict,
+            confidence=confidence,
+            semantic_conflicts=conflicts,
+            clip_consistency_score=round(clip_conf, 4),
+            annotated_overlay_image=overlay_path,
+            uncertainty={"epistemic": epistemic, "aleatoric": aleatoric},
+            human_review_required=human_review_required,
             limitations=limitations,
-            evidence_image_path=evidence_image_path,
-            robustness_stable=robustness_stable,
-            robustness_notes=robustness_notes,
+            debug={
+                "clip_top_label": clip_label,
+                "ocr_text_detected": ocr_text,
+                "lighting_raw_variance": round(raw_variance, 2),
+                "lighting_coefficient_of_variation": round(cv_score, 2),
+            },
         )
 
-    # -- Step 2: hand findings to SLM backbone for explanation ---------------
+    # -- Step 2: hand findings (+ image, if VL backbone) to SLM for explanation
 
-    def explain(self, findings: SemanticFindings) -> str:
+    def explain(self, findings: SemanticFindings, image_path: Optional[str] = None) -> str:
         """
-        Prompt-based fallback (Adapter B role) - turns structured findings into
-        a human-readable finding. Swap for a LoRA-tuned call later if Session 3
-        finishes early and real fine-tuning happens.
+        Turns structured findings into a human-readable forensic finding.
+
+        If AGENT_SUPPORTS_VISION is True and image_path is given, the image
+        itself is sent alongside the findings (Ollama's vision models accept
+        base64 images via the "images" field) - this lets Qwen 7B-VL actually
+        look at the picture and corroborate/contradict the deterministic
+        checks, instead of just narrating numbers it's told about.
+
+        Falls back to text-only (findings only, no image) if vision isn't
+        available yet or image_path isn't provided - keeps this working even
+        before the VL backbone is confirmed serving.
         """
         system_prompt = (
             "You are the Semantic & Context forensic agent in a deepfake "
-            "investigation pipeline. You are given structured numeric/text "
-            "findings from vision checks (CLIP scene classification, OCR, "
-            "lighting/shadow variance, a robustness re-check, and a "
-            "confidence/limitations assessment). Write a concise, specific "
-            "forensic finding (3-5 sentences) describing what the evidence "
-            "suggests about scene consistency, text plausibility, lighting, "
-            "and overall reliability of this evidence. Explicitly mention if "
-            "human review is recommended and why. Do not invent detail not "
-            "present in the findings. Use forensic terminology (e.g. "
-            "'consistent with', 'anomalous', 'implausible', 'inconclusive')."
+            "investigation pipeline. You are given structured findings from "
+            "vision checks (CLIP scene classification, OCR, lighting/shadow "
+            "variance) and a list of detected conflicts"
+            + (
+                ", along with the image itself. Look at the image and confirm "
+                "or push back on what the findings claim before writing your "
+                "answer - note explicitly if something you see contradicts a "
+                "finding."
+                if (AGENT_SUPPORTS_VISION and image_path)
+                else "."
+            )
+            + " Write a concise, specific forensic finding (2-4 sentences) "
+            "describing what the evidence suggests about scene consistency, "
+            "text plausibility, and lighting. Do not invent detail not "
+            "present in the findings or image. Use forensic terminology "
+            "(e.g. 'consistent with', 'anomalous', 'implausible')."
         )
         user_prompt = f"Findings:\n{json.dumps(asdict(findings), indent=2)}"
 
-        response = requests.post(
-            OLLAMA_ENDPOINT,
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": f"{system_prompt}\n\n{user_prompt}",
-                "stream": False,
-            },
-            timeout=60,
-        )
+        payload = {
+            "model": OLLAMA_MODEL,
+            "prompt": f"{system_prompt}\n\n{user_prompt}",
+            "stream": False,
+        }
+
+        if AGENT_SUPPORTS_VISION and image_path:
+            try:
+                import base64
+                with open(image_path, "rb") as f:
+                    payload["images"] = [base64.b64encode(f.read()).decode("utf-8")]
+            except Exception:
+                pass  # fall back silently to text-only if the image can't be read/encoded
+
+        response = requests.post(OLLAMA_ENDPOINT, json=payload, timeout=90)
         response.raise_for_status()
         return response.json().get("response", "").strip()
 
-    # -- Brownie point: Critic / Reviewer Model -------------------------------
+    # -- Entry points ---------------------------------------------------------
 
-    def critique(self, findings: SemanticFindings, explanation: str) -> dict:
+    def _event(self, status: str, etype: str, text: str = None, tool_name: str = None,
+               execution_ms: int = None, confidence: float = None,
+               extra: Dict[str, Any] = None) -> Dict[str, Any]:
+        e = {
+            "agent": "semantic",
+            "status": status,
+            "type": etype,          # thinking | tool | evidence | output
+            "text": text,
+            "tool_name": tool_name,
+            "execution_ms": execution_ms,
+            "confidence": confidence,
+            "ts": time.time(),
+        }
+        if extra:
+            e.update(extra)
+        return e
+
+    def investigate_stream(self, image_path: str, true_label: Optional[str] = None,
+                            skip_explain: bool = False):
         """
-        A second, cheap SLM pass that reviews the generated explanation
-        against the raw findings and flags unsupported claims -- a minimal
-        critic/reviewer step, distinct from the fusion/debate agent that
-        will later reconcile evidence across all 8 agents.
+        Generator version for live UI streaming (Table 3 contract). Yields
+        one event per step; conflicts are yielded one at a time as they're
+        found so the UI can drop a hotspot marker in real time. The final
+        event has type="output", status="completed", and carries the full
+        Report-Agent-shaped result under event["result"].
         """
-        critic_prompt = (
-            "You are a critic reviewing another AI agent's forensic finding "
-            "for a deepfake investigation. You are given the RAW FINDINGS "
-            "(ground truth data) and the EXPLANATION the agent wrote from "
-            "them. Check only whether the explanation is fully supported by "
-            "the raw findings -- flag any claim that isn't backed by the "
-            "data, or any important finding the explanation ignored. "
-            "Respond in EXACTLY this format:\n"
-            "VERDICT: PASS or FLAG\n"
-            "NOTES: <one or two sentences>"
-        )
-        user_prompt = (
-            f"RAW FINDINGS:\n{json.dumps(asdict(findings), indent=2)}\n\n"
-            f"EXPLANATION:\n{explanation}"
-        )
+        yield self._event("running", "thinking",
+                           text=f"Starting semantic & context analysis for {os.path.basename(image_path)}")
 
-        try:
-            response = requests.post(
-                OLLAMA_ENDPOINT,
-                json={
-                    "model": OLLAMA_MODEL,
-                    "prompt": f"{critic_prompt}\n\n{user_prompt}",
-                    "stream": False,
-                },
-                timeout=60,
-            )
-            response.raise_for_status()
-            text = response.json().get("response", "").strip()
-
-            verdict = "UNKNOWN"
-            notes = text
-            for line in text.splitlines():
-                if line.upper().startswith("VERDICT:"):
-                    verdict = line.split(":", 1)[1].strip().upper()
-                elif line.upper().startswith("NOTES:"):
-                    notes = line.split(":", 1)[1].strip()
-
-            return {"verdict": verdict, "notes": notes}
-        except Exception as e:
-            return {"verdict": "SKIPPED", "notes": f"Critic pass failed: {e}"}
-
-    # -- Entry point matching planner's dispatch contract ---------------------
-
-    def investigate(self, image_path: str, true_label: Optional[str] = None,
-                     run_critic: bool = True) -> dict:
-        """
-        Run the full pipeline on a single image.
-
-        true_label: optional ground-truth tag ("real" / "fake" / None).
-            This agent makes NO real/fake decision itself and does not use
-            this value in any check -- it's passed through purely so a test
-            harness (or the planner, during eval) can attach ground truth
-            to the output for later comparison. Safe to omit entirely in
-            production/inference where ground truth isn't known.
-        run_critic: set False to skip the extra critic LLM call (e.g. to
-            save time/tokens while iterating).
-        """
+        t0 = time.time()
         findings = self.run_checks(image_path)
-        explanation = self.explain(findings)
+        yield self._event("running", "tool", text="Ran CLIP scene check, OCR, and lighting analysis",
+                           tool_name="clip_ocr_lighting", execution_ms=int((time.time() - t0) * 1000),
+                           confidence=findings.clip_consistency_score)
+
+        for conflict in findings.semantic_conflicts:
+            yield self._event("running", "evidence",
+                               text=f"Conflict detected ({conflict.type}): {conflict.description}",
+                               confidence=1.0 - conflict.severity,
+                               extra={"conflict": asdict(conflict)})
 
         result = {
-            "agent": "semantic_context",
+            "agent": "semantic",
             "image": image_path,
             "findings": asdict(findings),
-            "explanation": explanation,
         }
 
-        if run_critic:
-            result["critic"] = self.critique(findings, explanation)
+        if not skip_explain:
+            try:
+                explanation = self.explain(findings, image_path=image_path)
+                result["explanation"] = explanation
+                yield self._event("running", "thinking", text="Drafted explanation, running critic review")
+                critic = self._critic_review(findings, explanation)
+                result["critic_review"] = critic
+                if not critic.get("agrees", True):
+                    adjusted = round(max(0.05, findings.confidence - 0.15), 4)
+                    result["findings"]["confidence"] = adjusted
+                    result["findings"]["human_review_required"] = True
+                    result["findings"]["limitations"].append(
+                        f"Critic flagged the explanation: {critic.get('notes', '')}"
+                    )
+            except Exception as e:
+                result["explanation"] = None
+                result["explain_error"] = str(e)
 
         if true_label is not None:
             result["true_label"] = true_label
 
+        yield self._event("completed", "output", text="Semantic analysis complete",
+                           confidence=result["findings"]["confidence"], extra={"result": result})
+
+    def investigate(self, image_path: str, true_label: Optional[str] = None,
+                     skip_explain: bool = False, on_event=None) -> dict:
+        """
+        Non-streaming convenience wrapper matching the planner's dispatch
+        contract. Pass on_event(callback) if you want the live events too
+        (e.g. to forward over SSE/WebSocket) while still getting a single
+        final dict back.
+        """
+        result = None
+        for event in self.investigate_stream(image_path, true_label=true_label, skip_explain=skip_explain):
+            if on_event:
+                on_event(event)
+            if event["type"] == "output" and event["status"] == "completed":
+                result = event["result"]
         return result
 
 
