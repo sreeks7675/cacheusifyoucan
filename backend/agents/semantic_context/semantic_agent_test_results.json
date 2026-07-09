@@ -1,0 +1,212 @@
+[
+  {
+    "image": "dataset/hackathon_datasets/extracted/storage/s25089/tmp_staging/shared/mfv_val_gemini/0_real/00005_real.jpg",
+    "true_label": "real",
+    "findings": {
+      "clip_top_label": "an indoor scene",
+      "clip_confidence": 0.7474,
+      "ocr_text_detected": "",
+      "ocr_suspicious": false,
+      "lighting_variance_score": 561.55,
+      "shadow_consistency_flag": true,
+      "overall_confidence": 0.7474,
+      "uncertainty_flag": false,
+      "recommend_human_review": false,
+      "limitations": "No limitations flagged; checks were consistent and confident.",
+      "evidence_image_path": "evidence_output/00005_real_evidence.jpg",
+      "robustness_stable": true,
+      "robustness_notes": "scene label stable under JPEG q=50 recompression; lighting variance delta=1.5 (within threshold 150.0).",
+      "raw_notes": null
+    },
+    "explanation": "The forensic findings suggest that the scene classification as an indoor setting is consistent with high confidence, at a level of approximately 74%. The absence of OCR detected text and lack of suspicious markers support this inference's plausibility; however, there are notable lighting variance scores indicating significant deviations from ideal conditions. Despite robust stability being confirmed through JPEG recompression analysis (with minimal variation), the elevated lighting variance score indicates potential inconsistencies that warrant human inspection for corroboration or further investigation into possible scene alterations not captured by existing checks and assessments.\n\nA detailed review is unnecessary given current data; however, future analyses might benefit from additional context to fully assess any unrecognized discrepancies. Human expertise could still be advantageous in confirming subtle details potentially overlooked during automated processes (e.g., nuances of lighting variance implications)."
+  },
+  {
+    "image": "dataset/hackathon_datasets/extracted/storage/s25089/tmp_staging/shared/mfv_val_gemini/0_real/00037_real.jpg",
+    "true_label": "real",
+    "findings": {
+      "clip_top_label": "an indoor scene",
+      "clip_confidence": 0.5212,
+      "ocr_text_detected": "",
+      "ocr_suspicious": false,
+      "lighting_variance_score": 1403.24,
+      "shadow_consistency_flag": true,
+      "overall_confidence": 0.3649,
+      "uncertainty_flag": false,
+      "recommend_human_review": true,
+      "limitations": "Limitations: Findings were not stable under a routine JPEG recompression test, so this evidence may not generalize. This agent only performs scene/OCR/lighting heuristics -- it does not verify facial biometrics, frequency-domain artifacts, or source attribution, which are other agents' jobs.",
+      "evidence_image_path": "evidence_output/00037_real_evidence.jpg",
+      "robustness_stable": false,
+      "robustness_notes": "scene label changed to \"an artificially lit photo\" under JPEG q=50 recompression; lighting variance delta=4.67 (within threshold 150.0).",
+      "raw_notes": null
+    },
+    "explanation": "Findings suggest an indoor scene with moderate confidence, but the overall reliability is questionable due to significant issues: \n1. The CLIP classification label as 'an artificially lit photo' under JPEG compression indicates inconsistent lighting conditions.\n2. A suspicious low OCR text detection result and absence of detected OCR-text imply implausibility regarding embedded metadata or content within this scene; human review recommended for validation given the potential limitations in automated analysis capabilities highlighted by a stability test failure on routine recompression, which also raises concerns about generalizability to other cases.\n\nHuman Review Recommendation: Yes. Human experts should validate findings due to unstable evidence under JPEG compression and OCR text detection implausibility.\nEvidence Reliability Concerns:\n- Inconsistent lighting conditions identified through significant variance scores suggest the scene may not be consistent or authentic (lighting_variance_score 1403.24, shadow_consistency_flag true).\n- Overall confidence is low at 0.3649 due to instability issues raised in robustness_stable = false and notable changes upon JPEG recompression as noted by a lighting variance delta of only marginally within threshold.\n \nLimitations noted: Other agents handle tasks like facial biometrics verification, frequency-domain artifact analysis for deeper scrutiny beyond this investigation's scope.\n\nEvidence Image Path provided."
+  },
+  {
+    "image": "dataset/hackathon_datasets/extracted/storage/s25089/tmp_staging/shared/mfv_val_gemini/0_real/00085_real.jpg",
+    "true_label": "real",
+    "findings": {
+      "clip_top_label": "an outdoor scene",
+      "clip_confidence": 0.5681,
+      "ocr_text_detected": "",
+      "ocr_suspicious": false,
+      "lighting_variance_score": 2081.93,
+      "shadow_consistency_flag": true,
+      "overall_confidence": 0.5681,
+      "uncertainty_flag": false,
+      "recommend_human_review": false,
+      "limitations": "No limitations flagged; checks were consistent and confident.",
+      "evidence_image_path": "evidence_output/00085_real_evidence.jpg",
+      "robustness_stable": true,
+      "robustness_notes": "scene label stable under JPEG q=50 recompression; lighting variance delta=27.13 (within threshold 150.0).",
+      "raw_notes": null
+    },
+    "explanation": "The findings indicate an outdoor scene classification with moderate confidence and consistent shadow analysis, suggesting reasonable consistency in the environmental context of this deepfake evidence (\"clip_top_label: 'an outdoor scene'\"). The high lighting variance score is slightly concerning (2081.93), but it falls within acceptable limits as per robustness checks confirming stability under JPEG compression; however, human review could still be beneficial to reassess any subtle discrepancies not captured by automated systems that may affect the overall credibility (\"robustness_stable: true\" and \"lighting_variance_score delta=27.13\"). No OCR text was detected which supports its plausibility given there is nothing suspicious about it (ocr_text_detected: \"\" & ocr_suspicious: false), reinforcing a consistent scene portrayal; human review may not be immediately recommended due to the confidence level, yet ongoing scrutiny can validate these findings (\"recommend_human_review\": false)."
+  },
+  {
+    "image": "dataset/hackathon_datasets/extracted/storage/s25089/tmp_staging/shared/mfv_val_gemini/0_real/00104_real.jpg",
+    "true_label": "real",
+    "findings": {
+      "clip_top_label": "an indoor scene",
+      "clip_confidence": 0.444,
+      "ocr_text_detected": "",
+      "ocr_suspicious": false,
+      "lighting_variance_score": 447.78,
+      "shadow_consistency_flag": true,
+      "overall_confidence": 0.444,
+      "uncertainty_flag": false,
+      "recommend_human_review": false,
+      "limitations": "No limitations flagged; checks were consistent and confident.",
+      "evidence_image_path": "evidence_output/00104_real_evidence.jpg",
+      "robustness_stable": true,
+      "robustness_notes": "scene label stable under JPEG q=50 recompression; lighting variance delta=1.48 (within threshold 150.0).",
+      "raw_notes": null
+    },
+    "explanation": "The scene classification is consistent with an indoor setting, but the overall confidence score of 0.444 suggests a need for cautious interpretation given this moderate level of certainty not indicating high reliability in automated assessments alone; lighting variance was within acceptable thresholds suggesting consistency under compression tests yet significant variations still warrant attention to shadow integrity due largely to good flagging on anomaly detection despite relatively low confidence scores across the board recommending further human review is recommended because while no limitations were flagged, it remains essential for a specialist's contextual and visual discernment in potentially subtle inconsistencies or nuanced details that automated systems might not fully capture. Overall reliability here appears compromised without expert confirmation due to moderate automation performance metrics."
+  },
+  {
+    "image": "dataset/hackathon_datasets/extracted/storage/s25089/tmp_staging/shared/mfv_val_gemini/0_real/00112_real.jpg",
+    "true_label": "real",
+    "findings": {
+      "clip_top_label": "an indoor scene",
+      "clip_confidence": 0.5739,
+      "ocr_text_detected": "",
+      "ocr_suspicious": false,
+      "lighting_variance_score": 1094.63,
+      "shadow_consistency_flag": true,
+      "overall_confidence": 0.5739,
+      "uncertainty_flag": false,
+      "recommend_human_review": false,
+      "limitations": "No limitations flagged; checks were consistent and confident.",
+      "evidence_image_path": "evidence_output/00112_real_evidence.jpg",
+      "robustness_stable": true,
+      "robustness_notes": "scene label stable under JPEG q=50 recompression; lighting variance delta=4.82 (within threshold 150.0).",
+      "raw_notes": null
+    },
+    "explanation": "Forensic finding: The clip, confidently classified as an indoor scene with a moderate confidence level of 57.39%, lacks detected OCR text and has minimal suspicious activity regarding optical character recognition tools; however, it exhibits significant lighting variance (score of 1094.63) which is marginally within the acceptable threshold but warrants attention to potential inconsistencies in illumination across different areas that could affect scene interpretation.\n\nFindings suggest:\n- Scene classification as 'indoor' consistent with expectations.\n- Low plausibility for OCR text detection, given lack thereof; thus no textual anomalies identified at this stage. Human review recommended solely based on an increase of human expertise regarding contextual understanding to further interpret the absence or presence of potential undetected texts within diverse lighting conditions across varying indoor scenes.\n\nHuman Review Recommendation: No immediate recommendation as evidence is consistent and robust with minor variance noted in lighting consistency; however, professional assessment could provide deeper insights into subtle scene attributes that automated tools may overlook."
+  },
+  {
+    "image": "dataset/hackathon_datasets/extracted/storage/s25089/tmp_staging/shared/mfv_val_gemini/1_fake/00005_00005_2.jpg",
+    "true_label": "fake",
+    "findings": {
+      "clip_top_label": "an indoor scene",
+      "clip_confidence": 0.5931,
+      "ocr_text_detected": "v\n\npacarrone WAUERSES",
+      "ocr_suspicious": false,
+      "lighting_variance_score": 301.4,
+      "shadow_consistency_flag": false,
+      "overall_confidence": 0.5931,
+      "uncertainty_flag": false,
+      "recommend_human_review": false,
+      "limitations": "No limitations flagged; checks were consistent and confident.",
+      "evidence_image_path": "evidence_output/00005_00005_2_evidence.jpg",
+      "robustness_stable": true,
+      "robustness_notes": "scene label stable under JPEG q=50 recompression; lighting variance delta=0.35 (within threshold 150.0).",
+      "raw_notes": null
+    },
+    "explanation": "The evidence suggests an indoor scene classified with moderate confidence at 59.31%, but the OCR-detected text 'v\\n\\npacarrone WAUERSES' is implausible, lacking coherence and context as a label or caption within such scenes; no suspicious anomalies were flagged related to lighting variance (301.4), shadow consistency remains inconclusive despite being off since there was none detected ('shadow_consistency_flag': false). The overall confidence mirrors the clip's low score suggesting caution in interpretation due primarily to text inconsistencies, and while robustness checks indicate stability under compression for scene classification but slight deviations within an acceptable threshold exist (lighting variance delta=0.35), human review is not recommended given there are no limitations flagged; however, a professional assessment could confirm OCR results' implausibility without further evidence of inconsistency or manipulation detected in the provided metrics and observations."
+  },
+  {
+    "image": "dataset/hackathon_datasets/extracted/storage/s25089/tmp_staging/shared/mfv_val_gemini/1_fake/00037_00037_5.jpg",
+    "true_label": "fake",
+    "findings": {
+      "clip_top_label": "an artificially lit photo",
+      "clip_confidence": 0.5971,
+      "ocr_text_detected": "",
+      "ocr_suspicious": false,
+      "lighting_variance_score": 1392.1,
+      "shadow_consistency_flag": true,
+      "overall_confidence": 0.5971,
+      "uncertainty_flag": false,
+      "recommend_human_review": false,
+      "limitations": "No limitations flagged; checks were consistent and confident.",
+      "evidence_image_path": "evidence_output/00037_00037_5_evidence.jpg",
+      "robustness_stable": true,
+      "robustness_notes": "scene label stable under JPEG q=50 recompression; lighting variance delta=6.92 (within threshold 150.0).",
+      "raw_notes": null
+    },
+    "explanation": "The evidence suggests an artificially lit scene due to the high confidence score of a non-human entity in front, consistent with human-generated imagery characteristics and shadow consistency across frames indicating plausible light sources within expected limits; however, OCR did not detect any text without being flagged as suspicious. The lighting variance is slightly above average but below threshold warranting no further uncertainty flag or recommendation for additional review given the stable robustness results under JPEG compression tests showing minimal change in scene classification after recompression (lighting delta=6.92). Overall reliability suggests a high likelihood of authenticity based on current checks; human verification may still benefit from contextual analysis despite an absence of flagged limitations, as numerical findings alone can overlook subtle nuances detectable by trained experts."
+  },
+  {
+    "image": "dataset/hackathon_datasets/extracted/storage/s25089/tmp_staging/shared/mfv_val_gemini/1_fake/00085_00085_4.jpg",
+    "true_label": "fake",
+    "findings": {
+      "clip_top_label": "an indoor scene",
+      "clip_confidence": 0.6173,
+      "ocr_text_detected": "",
+      "ocr_suspicious": false,
+      "lighting_variance_score": 401.89,
+      "shadow_consistency_flag": true,
+      "overall_confidence": 0.6173,
+      "uncertainty_flag": false,
+      "recommend_human_review": false,
+      "limitations": "No limitations flagged; checks were consistent and confident.",
+      "evidence_image_path": "evidence_output/00085_00085_4_evidence.jpg",
+      "robustness_stable": true,
+      "robustness_notes": "scene label stable under JPEG q=50 recompression; lighting variance delta=3.7 (within threshold 150.0).",
+      "raw_notes": null
+    },
+    "explanation": "The evidence suggests that the scene is an indoor setting consistent with a CLIP classification of 'an indoor scene' at moderate confidence level, but there are significant discrepancies in lighting conditions as indicated by high variances and minimal changes upon JPEG recompression (delta=3.7). Although shadow consistency appears stable under robustness checks suggesting some credibility for light sources depicted within the image; however, no OCR text has been detected which raises questions about scene context or narrative without further human analysis to assess implausibility of observed lighting conditions given consistent indoor expectations and confirm absence/misidentification in shadows due lack detection. Overall reliability is moderate but not inconclusive as inconsistencies require expert interpretation for validation purposes \u2013 recommending a review by an analyst experienced with image manipulation indicators (false recommendation despite robustness)."
+  },
+  {
+    "image": "dataset/hackathon_datasets/extracted/storage/s25089/tmp_staging/shared/mfv_val_gemini/1_fake/00104_00104_3.jpg",
+    "true_label": "fake",
+    "findings": {
+      "clip_top_label": "an indoor scene",
+      "clip_confidence": 0.275,
+      "ocr_text_detected": "",
+      "ocr_suspicious": false,
+      "lighting_variance_score": 507.77,
+      "shadow_consistency_flag": true,
+      "overall_confidence": 0.275,
+      "uncertainty_flag": true,
+      "recommend_human_review": true,
+      "limitations": "Limitations: CLIP scene classification confidence is low (0.27495095133781433). This agent only performs scene/OCR/lighting heuristics -- it does not verify facial biometrics, frequency-domain artifacts, or source attribution, which are other agents' jobs.",
+      "evidence_image_path": "evidence_output/00104_00104_3_evidence.jpg",
+      "robustness_stable": true,
+      "robustness_notes": "scene label stable under JPEG q=50 recompression; lighting variance delta=2.05 (within threshold 150.0).",
+      "raw_notes": null
+    },
+    "explanation": "Findings:\n\nThe evidence suggests an indoor scene classification but with a very low confidence level of approximately 27%. No OCR text was detected, and there are no suspicious indicators concerning the absence of this data; however, significant lighting variance exists (score: 507.77), raising concerns about potential tampering or inconsistencies in illumination across frames that could affect visual continuity.\n\nThe shadow consistency is confirmed as consistent with real-world physics for indoor scenes which implies some plausibility regarding scene composition and spatial arrangement within the image frame itself \u2013 though this must be weighed against other findings given overall low confidence. \n\nAn important recommendation here would indeed involve human review due to multiple factors: First, there are significant uncertainties flagged in both CLIP classification (confidence of 27%) as well as lighting variance assessments that approach an anomalous threshold; second, despite the robustness being stable under JPEG compression tests which may indicate some reliability with respect to image integrity after minor alterations or degradations. Given these mixed results and low confidence scores across different aspects including scene interpretation by CLIP \u2013 a limitation explicitly noted in its inability to verify biometric data among other factors \u2013 professional human expertise is warranted for further analysis, especially considering the substantial lighting inconsistencies detected that could significantly influence perception of authenticity.\n\nOverall reliability: Low; while some elements like shadow consistency may be reliable indicators within this image context (suggesting plausible scene construction), there are overarching concerns with insufficient confidence in machine classifications and significant variations which make final judgment inconclusive without human intervention. \n\nHuman review is recommended due to the low confidence scores, inconsistencies detected across multiple checks including lighting variance beyond threshold norms for indoor scenes \u2013 particularly crucial given that these findings could substantially influence determinations of authenticity or tampering within a forensic context.\n\nEvidence Image: evidence_output/00104_00104_3_evidence.jpg"
+  },
+  {
+    "image": "dataset/hackathon_datasets/extracted/storage/s25089/tmp_staging/shared/mfv_val_gemini/1_fake/00112_00112_1.jpg",
+    "true_label": "fake",
+    "findings": {
+      "clip_top_label": "an indoor scene",
+      "clip_confidence": 0.6515,
+      "ocr_text_detected": "",
+      "ocr_suspicious": false,
+      "lighting_variance_score": 1026.8,
+      "shadow_consistency_flag": true,
+      "overall_confidence": 0.6515,
+      "uncertainty_flag": false,
+      "recommend_human_review": false,
+      "limitations": "No limitations flagged; checks were consistent and confident.",
+      "evidence_image_path": "evidence_output/00112_00112_1_evidence.jpg",
+      "robustness_stable": true,
+      "robustness_notes": "scene label stable under JPEG q=50 recompression; lighting variance delta=5.6 (within threshold 150.0).",
+      "raw_notes": null
+    },
+    "explanation": "Forensic finding: The analysis of the evidence image indicates an indoor scene consistent with typical interior environments, as per CLIP top-level classification and shadow consistency flag being true under robustness checks for JPEG recompression at q=50; however, OCR failed to detect any text. Lighting variance is marginally elevated but remains within acceptable thresholds (lighting_variance_score: 1026.8 vs threshold of 1500), implying scene lighting stability across the image with a confidence score maintaining high consistency overall (clip_confidence: 0.6515). The absence of detected suspicious elements in OCR results and stable robustness notes suggest there are no overt inconsistencies or limitations that would compromise reliability; thus, human review is not recommended at this stage due to consistent scene classification corroborated by multiple independent checks with inconsequential variance noted (robustness_stable: true) as per the evidence_image_path provided."
+  }
+]
