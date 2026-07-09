@@ -12,8 +12,8 @@ import chromadb
 from chromadb.api.types import Include
 from chromadb.config import Settings
 
-from app.config import KNOWLEDGE_COLLECTION_NAME, VECTOR_DB_DIR
-from app.rag.embedder import get_embedding_function
+from ..config import KNOWLEDGE_COLLECTION_NAME, VECTOR_DB_DIR
+from .embedder import get_embedding_function
 
 _client = chromadb.Client(
     Settings(

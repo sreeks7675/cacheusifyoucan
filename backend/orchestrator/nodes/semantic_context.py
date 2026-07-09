@@ -1,7 +1,6 @@
 # backend/orchestrator/nodes/semantic_context.py
 import os
 from backend.orchestrator.state import PipelineState, AgentAnalysis
-from backend.agents.semantic_context.semantic_agent import SemanticContextAgent
 
 def semantic_context_node(state: PipelineState) -> dict:
     print("\n=======================================================")
@@ -12,6 +11,7 @@ def semantic_context_node(state: PipelineState) -> dict:
     # 1. Initialize your teammate's agent class safely
     # It auto-detects CUDA/CPU internally.
     try:
+        from backend.agents.semantic_context.semantic_agent import SemanticContextAgent
         agent = SemanticContextAgent()
     except Exception as e:
         print(f"[Orchestrator Error] Failed to initialize Semantic Agent: {e}")

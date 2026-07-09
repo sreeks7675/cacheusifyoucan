@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.models import KnowledgeCategory, SourceType
+from ..models.models import KnowledgeCategory, SourceType
 
 
 class KnowledgeDocumentResponse(BaseModel):

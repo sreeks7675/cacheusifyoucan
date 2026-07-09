@@ -8,7 +8,7 @@ Postgres/MySQL later) can be swapped by changing DATABASE_URL only.
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-from app.config import DATABASE_URL
+from .config import DATABASE_URL
 
 # check_same_thread=False is required for SQLite when used with FastAPI's
 # multi-threaded request handling. Not needed once you move to Postgres.

@@ -19,7 +19,7 @@ from typing import List
 
 from sklearn.feature_extraction.text import HashingVectorizer
 
-from app.config import EMBEDDING_DIM
+from ..config import EMBEDDING_DIM
 
 
 class OfflineHashingEmbeddingFunction:

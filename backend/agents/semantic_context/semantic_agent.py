@@ -219,8 +219,9 @@ class SemanticContextAgent:
             var_stable = var_delta <= ROBUSTNESS_VARIANCE_DELTA_THRESHOLD
 
             stable = label_stable and var_stable
+            label_note = "stable" if label_stable else f"changed to '{re_label}'"
             notes = (
-                f"scene label {'stable' if label_stable else f'changed to \"{re_label}\"'} "
+                f"scene label {label_note} "
                 f"under JPEG q={ROBUSTNESS_JPEG_QUALITY} recompression; "
                 f"lighting variance delta={round(var_delta, 2)} "
                 f"({'within' if var_stable else 'exceeds'} threshold "

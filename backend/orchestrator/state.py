@@ -3,6 +3,12 @@ from typing import Dict, List, Any, Optional, Annotated
 from pydantic import BaseModel, Field
 import operator
 
+
+def _merge_dicts(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(left or {})
+    merged.update(right or {})
+    return merged
+
 class AgentAnalysis(BaseModel):
     agent_name: str
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -27,11 +33,11 @@ class PipelineState(BaseModel):
     routing_rationale: str = ""
     
     # Parallel Agents Collective Output
-    agent_responses: Dict[str, AgentAnalysis] = Field(default_factory=dict)
+    agent_responses: Annotated[Dict[str, AgentAnalysis], _merge_dicts] = Field(default_factory=dict)
     
     # Evidence Fusion & Debate State
     debate_logs: Annotated[List[str], operator.add] = Field(default_factory=list)
-    consolidated_evidence: Dict[str, Any] = Field(default_factory=dict)
+    consolidated_evidence: Annotated[Dict[str, Any], _merge_dicts] = Field(default_factory=dict)
     
     # Final Decision & Audit Trail (The 'Brownie Points' Compliance Checklist)
     final_decision: Dict[str, Any] = Field(default_factory=dict)

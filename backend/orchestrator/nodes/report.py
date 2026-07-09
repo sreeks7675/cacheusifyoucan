@@ -2,11 +2,19 @@
 import os
 import json
 from backend.orchestrator.state import PipelineState
-# Import the actual generator function written by your teammate
-from backend.agents.report.new_report_gen import generate_report_payload
 
 def report_node(state: PipelineState) -> dict:
     print(f"\n--- [ORCHESTRATOR] Invoking Real Report Agent for Session: {state.session_id} ---")
+
+    # Import lazily so graph compilation doesn't fail if report dependencies are unavailable.
+    try:
+        from backend.agents.report.new_report_gen import generate_report_payload
+    except Exception as e:
+        print(f"[CRITICAL] Report agent import failed: {e}")
+        return {"report_path": None}
+
+    forensic_response = state.agent_responses.get("forensic")
+    semantic_response = state.agent_responses.get("semantic_context")
 
     # 1. Structure the current pipeline state into the exact schema the report generator expects
     case_data = {
@@ -37,13 +45,13 @@ def report_node(state: PipelineState) -> dict:
                 },
                 # Gather actual structural values accumulated from the running agents
                 "forensic": {
-                    "verdict": state.agent_responses.get("forensic").findings[0] if "forensic" in state.agent_responses else "N/A",
+                    "verdict": forensic_response.findings[0] if forensic_response and forensic_response.findings else "N/A",
                     "artifact_findings": state.consolidated_evidence.get("artifact_findings", []),
                     "assets": state.consolidated_evidence.get("assets", {}),
                     "metadata_flags": state.consolidated_evidence.get("metadata_flags", [])
                 },
                 "semantic": {
-                    "verdict": "FAKE" if state.agent_responses.get("semantic_context").raw_output.get("recommend_human_review") else "REAL",
+                    "verdict": "FAKE" if semantic_response and semantic_response.raw_output.get("recommend_human_review") else "REAL",
                     "semantic_conflicts": state.consolidated_evidence.get("semantic_conflicts", [])
                 },
                 "retrieval": {

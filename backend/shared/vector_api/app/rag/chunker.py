@@ -9,7 +9,7 @@ chunker later if you need tighter control over LLM context windows.
 
 from typing import List
 
-from app.config import CHUNK_SIZE, CHUNK_OVERLAP
+from ..config import CHUNK_SIZE, CHUNK_OVERLAP
 
 
 def chunk_text(
