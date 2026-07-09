@@ -100,6 +100,24 @@ LIGHTING_CV_THRESHOLD = 20.0        # coefficient-of-variation %, not raw varian
 SEVERE_CONFLICT_THRESHOLD = 0.6     # conflict severity above which verdict -> inconsistent
 CONFIDENCE_LOW_THRESHOLD = 0.5      # below this, flag for human review
 
+# CLIP zero-shot confidence over 7 coarse, overlapping scene labels is a much
+# weaker/noisier signal than a genuine detected anomaly (shadow mismatch,
+# garbled OCR text) - plenty of ordinary REAL photos land under
+# CLIP_AMBIGUOUS_THRESHOLD just because the forced-choice softmax is unsure,
+# not because anything is actually wrong. So this conflict type is capped
+# below SEVERE_CONFLICT_THRESHOLD: CLIP ambiguity alone can push the verdict
+# to "uncertain" but never to "inconsistent" on its own - it can only tip
+# things over into "inconsistent" territory when COMBINED with a real
+# detected conflict (lighting/OCR) that already carries higher severity.
+CLIP_CONFLICT_MAX_SEVERITY = 0.55
+
+# Where to write annotated overlays. None => write next to the source image
+# (default). If that write fails (e.g. a read-only mounted dataset folder),
+# we fall back to ./semantic_overlays/ automatically - see
+# _draw_annotated_overlay(). Set this explicitly to force all overlays into
+# one folder regardless.
+OVERLAY_OUTPUT_DIR: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # Data contracts
@@ -220,12 +238,57 @@ class SemanticContextAgent:
             label_y = max(y - 8, 14)
             cv2.putText(overlay, c.type, (x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-        base, _ = os.path.splitext(image_path)
-        out_path = f"{base}_semantic_annotated.png"
-        cv2.imwrite(out_path, overlay)
-        return out_path
+        filename = os.path.splitext(os.path.basename(image_path))[0] + "_semantic_annotated.png"
+        primary_dir = OVERLAY_OUTPUT_DIR or os.path.dirname(image_path) or "."
+        out_path = os.path.join(primary_dir, filename)
+
+        # cv2.imwrite does NOT raise on failure - it just returns False - so
+        # a read-only dataset dir (common for shared/staging data) previously
+        # caused this to silently return a path to a file that was never
+        # written. Check the return value and fall back to a writable local
+        # directory instead of lying about where the overlay actually is.
+        try:
+            ok = bool(cv2.imwrite(out_path, overlay))
+        except Exception:
+            ok = False
+
+        if not ok:
+            fallback_dir = os.path.join(os.getcwd(), "semantic_overlays")
+            os.makedirs(fallback_dir, exist_ok=True)
+            out_path = os.path.join(fallback_dir, filename)
+            try:
+                ok = bool(cv2.imwrite(out_path, overlay))
+            except Exception:
+                ok = False
+
+        return out_path if ok else None
 
     # -- critic / reviewer step (brownie point) ------------------------------
+
+    @staticmethod
+    def _extract_json_object(raw: str) -> Dict[str, Any]:
+        """
+        LLMs asked for "strict JSON" frequently wrap it in ```json ... ```
+        fences or add a stray sentence before/after anyway. A bare
+        json.loads(raw) fails on all of that and (previously) always fell
+        back to a silent "agrees=True", meaning the critic step effectively
+        never fired in practice. This strips common fencing and, failing
+        that, extracts the first {...} span before parsing.
+        """
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lower().startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start:end + 1])
+        raise ValueError(f"No parseable JSON object found in: {raw[:200]!r}")
 
     def _critic_review(self, findings: SemanticFindings, explanation: str) -> Dict[str, Any]:
         """
@@ -259,12 +322,13 @@ class SemanticContextAgent:
         response.raise_for_status()
         raw = response.json().get("response", "").strip()
         try:
-            parsed = json.loads(raw)
+            parsed = self._extract_json_object(raw)
             return {"agrees": bool(parsed.get("agrees", True)), "notes": str(parsed.get("notes", ""))}
         except Exception:
-            # Critic output wasn't valid JSON - fail open (agrees=True) rather
-            # than silently tanking confidence on a parsing fluke, but keep the
-            # raw text so a human can see what happened.
+            # Critic output wasn't valid/extractable JSON - fail open
+            # (agrees=True) rather than silently tanking confidence on a
+            # parsing fluke, but keep the raw text so a human can see what
+            # happened.
             return {"agrees": True, "notes": f"Critic response was not valid JSON: {raw[:200]}"}
 
     # -- Step 1: cheap deterministic/vision checks --------------------------
@@ -343,10 +407,14 @@ class SemanticContextAgent:
                     f"CLIP zero-shot scene classification is low-confidence "
                     f"(top label '{clip_label}' at {clip_conf:.2f}), meaning the "
                     f"overall scene semantics are ambiguous or internally "
-                    f"inconsistent rather than clearly matching one plausible scene."
+                    f"inconsistent rather than clearly matching one plausible scene. "
+                    f"Note: low CLIP confidence alone is a weak signal (common on "
+                    f"genuine photos too), so its severity is capped below the "
+                    f"'inconsistent' threshold on its own."
                 ),
                 region_bbox=[0, 0, w, h],
-                severity=round(1.0 - clip_conf, 4),
+                # Capped - see CLIP_CONFLICT_MAX_SEVERITY above for why.
+                severity=round(min(CLIP_CONFLICT_MAX_SEVERITY, 1.0 - clip_conf), 4),
             ))
 
         # -- roll up verdict / confidence / uncertainty ----------------------
@@ -489,22 +557,33 @@ class SemanticContextAgent:
         }
 
         if not skip_explain:
+            # Separate try/except per step: a critic-review failure (e.g. a
+            # second Ollama call timing out) must not discard an explanation
+            # that already succeeded - previously both were caught by one
+            # except block, so any critic error silently wiped a good
+            # explanation back to None.
             try:
                 explanation = self.explain(findings, image_path=image_path)
                 result["explanation"] = explanation
-                yield self._event("running", "thinking", text="Drafted explanation, running critic review")
-                critic = self._critic_review(findings, explanation)
-                result["critic_review"] = critic
-                if not critic.get("agrees", True):
-                    adjusted = round(max(0.05, findings.confidence - 0.15), 4)
-                    result["findings"]["confidence"] = adjusted
-                    result["findings"]["human_review_required"] = True
-                    result["findings"]["limitations"].append(
-                        f"Critic flagged the explanation: {critic.get('notes', '')}"
-                    )
             except Exception as e:
                 result["explanation"] = None
                 result["explain_error"] = str(e)
+
+            if result.get("explanation"):
+                try:
+                    yield self._event("running", "thinking", text="Drafted explanation, running critic review")
+                    critic = self._critic_review(findings, result["explanation"])
+                    result["critic_review"] = critic
+                    if not critic.get("agrees", True):
+                        adjusted = round(max(0.05, findings.confidence - 0.15), 4)
+                        result["findings"]["confidence"] = adjusted
+                        result["findings"]["human_review_required"] = True
+                        result["findings"]["limitations"].append(
+                            f"Critic flagged the explanation: {critic.get('notes', '')}"
+                        )
+                except Exception as e:
+                    result["critic_review"] = None
+                    result["critic_error"] = str(e)
 
         if true_label is not None:
             result["true_label"] = true_label
