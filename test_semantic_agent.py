@@ -17,6 +17,18 @@ For every image tested, the harness attaches the ground-truth label
 ("real" / "fake") to the agent's output (the agent itself never sees or
 uses this label - it's just for your own eyeballing/bookkeeping), and
 prints a small summary at the end broken down by class.
+
+NOTE (VLM-only agent): the agent's initial analysis (run_checks) now calls
+the Qwen 7B-VL backbone directly - there is no more local/offline CLIP+OCR+
+cv2 fallback. That means --skip-explain no longer avoids Ollama entirely;
+it only skips the *narrative explanation + critic review* calls. If the
+backbone isn't served yet, every image will fail at run_checks() regardless
+of --skip-explain, and you'll see that surfaced as either a per-image
+"[FAILED: ...]" line (connection errors) or as findings with
+verdict="uncertain", human_review_required=True and a
+"Vision-language backbone call failed: ..." limitation (any other failure
+run_checks() catches internally). Make sure `ollama serve` + the model tag
+in semantic_agent.OLLAMA_MODEL are up before running this.
 """
 
 import argparse
@@ -24,7 +36,6 @@ import json
 import os
 import sys
 import time
-from dataclasses import asdict
 
 from semantic_agent import SemanticContextAgent
 
@@ -134,8 +145,13 @@ def main():
     parser.add_argument(
         "--skip-explain",
         action="store_true",
-        help="Skip the Ollama call (explain + critic review) and just "
-             "print raw findings (use this if the backbone isn't served yet)"
+        help="Skip the narrative explanation + critic review Ollama calls "
+             "and just print raw findings. NOTE: this does NOT skip Ollama "
+             "entirely - the initial analysis (run_checks) always calls the "
+             "Qwen 7B-VL backbone now, since that's the only check "
+             "mechanism this agent has. Use this flag to save two extra "
+             "round-trips per image while iterating, not to avoid needing "
+             "the backbone served at all."
     )
     parser.add_argument(
         "--allow-single-class",
@@ -163,6 +179,12 @@ def main():
         f"Found {len(sample)} image(s) to test "
         f"(real={n_real}, fake={n_fake}, unknown={n_unknown}, limit={args.limit})\n"
     )
+    print(
+        "NOTE: this agent is VLM-only now (Qwen 7B-VL via Ollama) - make "
+        "sure `ollama serve` is running and the model in "
+        "semantic_agent.OLLAMA_MODEL is pulled, or every image below will "
+        "fail/degrade to a low-confidence 'uncertain' verdict.\n"
+    )
 
     agent = SemanticContextAgent()
 
@@ -173,11 +195,12 @@ def main():
         t0 = time.time()
 
         try:
-            # investigate() runs checks + (optionally) explain + critic,
-            # and returns the exact Report-Agent-shaped dict (verdict,
-            # confidence, semantic_conflicts[], clip_consistency_score,
-            # annotated_overlay_image, uncertainty, human_review_required,
-            # limitations, debug, [explanation, critic_review]).
+            # investigate() runs the VLM analysis + (optionally) explain and
+            # critic, and returns the exact Report-Agent-shaped dict
+            # (verdict, confidence, semantic_conflicts[],
+            # clip_consistency_score, annotated_overlay_image, uncertainty,
+            # human_review_required, limitations, debug,
+            # [explanation, critic_review]).
             record = agent.investigate(path, true_label=label, skip_explain=args.skip_explain)
             print(json.dumps(record, indent=2))
             results.append(record)
